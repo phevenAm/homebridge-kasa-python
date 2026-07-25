@@ -16,16 +16,24 @@ export interface HSV {
   saturation: number;
 }
 
+export interface ButtonEvent {
+  id: number;
+  timestamp: number;
+  event: string;
+}
+
 export interface ChildDevice {
   alias: string;
   brightness?: number;
+  button_events?: ButtonEvent[];
   color_temp?: number;
   energy?: Energy;
   fan_speed_level?: number;
   hsv?: HSV;
   id: string;
+  model?: string;
   state: boolean;
-  [key: string]: string | number | boolean | Energy | HSV | undefined;
+  [key: string]: string | number | boolean | Energy | HSV | ButtonEvent[] | undefined;
 }
 
 export interface SysInfo {
@@ -80,8 +88,14 @@ export interface Switch {
   last_seen: Date;
   offline: boolean;
 }
+export interface Hub {
+  sys_info: SysInfo;
+  feature_info: FeatureInfo;
+  last_seen: Date;
+  offline: boolean;
+}
 
-export type KasaDevice = LightBulb | Plug | PowerStrip | Switch;
+export type KasaDevice = LightBulb | Plug | PowerStrip | Switch | Hub;
 
 export interface DeviceConfig {
   host: string;
@@ -114,6 +128,8 @@ export const Switches = [
   'ES20M', 'HS200', 'HS210', 'HS220', 'KP405', 'KS200', 'KS200M', 'KS205', 'KS220', 'KS220M', 'KS225',
   'KS230', 'KS240', 'S210', 'S220', 'S500', 'S500D', 'S505', 'S505D', 'S515D', 'TS15',
 ];
+export const Hubs = ['H100'];
+export const Buttons = ['S200B', 'S200D'];
 export const LightBulbs = [
   'KL110', 'KL110B', 'KL120', 'KL125', 'KL130', 'KL135', 'KL50', 'KL60', 'LB100', 'LB110', 'LB130', 'L430C',
   'L430P', 'L510', 'L510 Series', 'L530', 'L535', 'L630', 'KL400L5', 'KL400L10', 'KL420L5', 'KL430', 'L900',
@@ -121,7 +137,7 @@ export const LightBulbs = [
 ];
 export const Unsupported = [
   'C100', 'C110', 'C210', 'C220', 'C225', 'C325WB', 'C520WS', 'C720', 'TC65', 'TC70', 'D100C', 'D130',
-  'D230', 'RV20 Max Plus', 'RV30 Max', 'KH100', 'H100', 'H200', 'KE100', 'S200B', 'S200D', 'T100',
+  'D230', 'RV20 Max Plus', 'RV30 Max', 'KH100', 'H200', 'KE100', 'T100',
   'T110', 'T300', 'T310', 'T315',
 ];
 

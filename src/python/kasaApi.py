@@ -143,14 +143,6 @@ async def get_button_info(child: Device) -> dict[str, Any]:
                     ]
         except Exception as e:
             log(f"Error fetching trigger logs: {e}", level="ERROR", alias=child.alias)
-    battery_module = child.modules.get(Module.BatterySensor)
-    if battery_module:
-        try:
-            percentage = getattr(battery_module, "battery_percentage", None)
-            if percentage is not None:
-                info["battery_percentage"] = percentage
-        except Exception as e:
-            log(f"Error reading battery info: {e}", level="ERROR", alias=child.alias)
     return info
 
 def get_light_info(device: Device) -> dict[str, Any]:
@@ -184,7 +176,17 @@ def get_energy_info(device: Device) -> dict[str, Any]:
 
 async def custom_serializer(device: Device) -> dict[str, Any]:
     log("Serializing device", host=device.host, alias=device.alias)
-    child_num = len(device.children) if device.children else 0
+    raw_children = device.children if device.children else []
+    # Hub-connected sensors we don't yet know how to expose (contact, motion,
+    # temperature/humidity, etc.) are dropped here rather than surfaced as
+    # incomplete accessories. Buttons/dials are the only supported hub children.
+    supported_children = [
+        c for c in raw_children if c.device_type != DeviceType.Sensor or c.model in BUTTON_MODELS
+    ]
+    for c in raw_children:
+        if c not in supported_children:
+            log(f"Skipping unsupported hub child device: {c.model}", level="DEBUG", alias=c.alias)
+    child_num = len(supported_children)
     sys_info: dict[str, Any] = {
         "alias": device.alias or f'{device.device_type}_{device.host}',
         "child_num": child_num,
@@ -200,7 +202,7 @@ async def custom_serializer(device: Device) -> dict[str, Any]:
     fan_module = device.modules.get(Module.Fan)
     energy_module = device.modules.get(Module.Energy)
     if child_num > 0:
-        sorted_children = sorted(device.children, key=lambda c: _extract_child_suffix_index(c.device_id))
+        sorted_children = sorted(supported_children, key=lambda c: _extract_child_suffix_index(c.device_id))
         sys_info["children"] = [
             await serialize_child(child, index) for index, child in enumerate(sorted_children)
         ]

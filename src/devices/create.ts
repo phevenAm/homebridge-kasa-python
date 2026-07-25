@@ -1,10 +1,11 @@
 import HomeKitDevice from './baseDevice.js';
+import HomeKitDeviceHubWithChildren from './homekitHubWithChildren.js';
 import HomeKitDeviceLightBulb from './homekitLightBulb.js';
 import HomeKitDevicePlug from './homekitPlug.js';
 import HomeKitDevicePowerStrip from './homekitPowerStrip.js';
 import HomeKitDeviceSwitch from './homekitSwitch.js';
 import HomeKitDeviceSwitchWithChildren from './homekitSwitchWithChildren.js';
-import { LightBulbs, Plugs, PowerStrips, Switches } from './deviceTypes.js';
+import { Hubs, LightBulbs, Plugs, PowerStrips, Switches } from './deviceTypes.js';
 import type KasaPythonPlatform from '../platform.js';
 import type { KasaDevice } from './deviceTypes.js';
 
@@ -19,6 +20,9 @@ function isPowerStrip(device: KasaDevice) {
 }
 function isSwitch(device: KasaDevice) {
   return Switches.includes(device.sys_info.model);
+}
+function isHub(device: KasaDevice) {
+  return Hubs.includes(device.sys_info.model);
 }
 
 export default async function createDevice(
@@ -43,6 +47,13 @@ export default async function createDevice(
     } else {
       instance = new HomeKitDeviceSwitch(platform, kasaDevice);
     }
+  } else if (isHub(kasaDevice)) {
+    if (kasaDevice.sys_info.child_num === 0) {
+      platform.log.debug('Hub has no supported paired accessories; skipping:', kasaDevice.sys_info.model);
+      return undefined;
+    }
+    platform.log.debug('Device classified as Hub:', kasaDevice.sys_info.model);
+    instance = new HomeKitDeviceHubWithChildren(platform, kasaDevice);
   } else {
     platform.log.error('Unknown device type; skipping:', kasaDevice.sys_info.model);
     return undefined;
