@@ -29,7 +29,6 @@ device_queue: asyncio.Queue = asyncio.Queue()
 UNSUPPORTED_TYPES = {
     DeviceType.Camera.value,
     DeviceType.Sensor.value,
-    DeviceType.Hub.value,
     DeviceType.Fan.value,
     DeviceType.Thermostat.value,
     DeviceType.Vacuum.value,
@@ -37,6 +36,15 @@ UNSUPPORTED_TYPES = {
     DeviceType.Doorbell.value,
     DeviceType.Unknown.value,
 }
+
+# Hub-connected battery devices we know how to expose as HomeKit accessories.
+# Other hub children (contact/motion/temperature sensors, etc.) are left out of
+# the serialized children list until support for them is added.
+BUTTON_MODELS = {"S200B", "S200D"}
+
+# Highest trigger-log id we've already reported per child device_id, so polls
+# only surface events that happened since the last time we looked.
+last_trigger_log_id_cache: dict[str, int] = {}
 
 def kelvin_to_mired(kelvin: int) -> int:
     if not kelvin or kelvin <= 0:
@@ -70,13 +78,23 @@ def _extract_child_suffix_index(device_id: str) -> int:
     m = re.search(r'(\d{1,2})$', base)
     return int(m.group(1)) if m else 0
 
-def serialize_child(child: Device) -> dict[str, Any]:
+async def serialize_child(child: Device, index: int) -> dict[str, Any]:
     log("Serializing child device", alias=child.alias)
-    child_info = {
+    is_button = child.model in BUTTON_MODELS
+    child_info: dict[str, Any] = {
         "alias": child.alias,
-        "id": child.device_id.split('_', 1)[1] if '_' in child.device_id else child.device_id,
-        "state": child.features["state"].value,
+        # Button/dial device_ids don't reliably end in a small ordinal like power
+        # strip sockets do, so we assign one ourselves to keep HomeKit service
+        # subtypes stable and distinct across multiple paired buttons.
+        "id": f"{index:02d}" if is_button else (
+            child.device_id.split('_', 1)[1] if '_' in child.device_id else child.device_id
+        ),
+        "model": child.model,
+        "state": child.features["state"].value if "state" in child.features else True,
     }
+    if is_button:
+        child_info.update(await get_button_info(child))
+        return child_info
     light_module = child.modules.get(Module.Light)
     fan_module = child.modules.get(Module.Fan)
     energy_module = child.modules.get(Module.Energy)
@@ -91,6 +109,49 @@ def serialize_child(child: Device) -> dict[str, Any]:
     if energy_module:
         child_info.update(get_energy_info(child))
     return child_info
+
+async def get_button_info(child: Device) -> dict[str, Any]:
+    log("Getting button info for device", alias=child.alias)
+    info: dict[str, Any] = {"button_events": []}
+    trigger_logs = child.modules.get(Module.TriggerLogs)
+    if trigger_logs:
+        try:
+            # TriggerLogs.MINIMUM_UPDATE_INTERVAL_SECS rate-limits this query to
+            # once an hour during normal device.update() cycles, which is far too
+            # slow for button presses. Calling the module directly bypasses that
+            # and fetches the current log buffer every poll.
+            result = await trigger_logs.call("get_trigger_logs", {"start_id": 0})
+            raw_logs = result.get("logs", []) if isinstance(result, dict) else []
+            raw_logs.sort(key=lambda entry: entry.get("id", 0))
+            last_seen_id = last_trigger_log_id_cache.get(child.device_id)
+            if last_seen_id is None:
+                # First time we've seen this child (e.g. just started up); seed the
+                # baseline without firing HomeKit events for history that already happened.
+                if raw_logs:
+                    last_trigger_log_id_cache[child.device_id] = raw_logs[-1].get("id", 0)
+            else:
+                new_logs = [entry for entry in raw_logs if entry.get("id", 0) > last_seen_id]
+                if new_logs:
+                    last_trigger_log_id_cache[child.device_id] = new_logs[-1].get("id", 0)
+                    info["button_events"] = [
+                        {
+                            "id": entry.get("id", 0),
+                            "timestamp": entry.get("timestamp", 0),
+                            "event": entry.get("event", ""),
+                        }
+                        for entry in new_logs
+                    ]
+        except Exception as e:
+            log(f"Error fetching trigger logs: {e}", level="ERROR", alias=child.alias)
+    battery_module = child.modules.get(Module.BatterySensor)
+    if battery_module:
+        try:
+            percentage = getattr(battery_module, "battery_percentage", None)
+            if percentage is not None:
+                info["battery_percentage"] = percentage
+        except Exception as e:
+            log(f"Error reading battery info: {e}", level="ERROR", alias=child.alias)
+    return info
 
 def get_light_info(device: Device) -> dict[str, Any]:
     log("Getting light info for device", alias=device.alias)
@@ -121,7 +182,7 @@ def get_energy_info(device: Device) -> dict[str, Any]:
     energy_dict = {key: getattr(energy_module, attr) for key, attr in energy_fields}
     return {"energy": energy_dict}
 
-def custom_serializer(device: Device) -> dict[str, Any]:
+async def custom_serializer(device: Device) -> dict[str, Any]:
     log("Serializing device", host=device.host, alias=device.alias)
     child_num = len(device.children) if device.children else 0
     sys_info: dict[str, Any] = {
@@ -140,9 +201,11 @@ def custom_serializer(device: Device) -> dict[str, Any]:
     energy_module = device.modules.get(Module.Energy)
     if child_num > 0:
         sorted_children = sorted(device.children, key=lambda c: _extract_child_suffix_index(c.device_id))
-        sys_info["children"] = [serialize_child(child) for child in sorted_children]
+        sys_info["children"] = [
+            await serialize_child(child, index) for index, child in enumerate(sorted_children)
+        ]
     else:
-        sys_info.update({"state": device.features["state"].value})
+        sys_info.update({"state": device.features["state"].value if "state" in device.features else False})
         if light_module:
             sys_info.update(get_light_info(device))
         if fan_module:
@@ -280,7 +343,7 @@ async def close_all_connections():
 async def create_device_info(device: Device) -> dict[str, Any]:
     log("Creating device info", host=device.host, alias=device.alias)
     try:
-        device_info = custom_serializer(device)
+        device_info = await custom_serializer(device)
         device_config_cache[device.host] = device.config.to_dict()
         all_device_info = {
             "sys_info": device_info["sys_info"],
@@ -300,7 +363,7 @@ async def get_sys_info(host: str) -> dict[str, Any]:
         async with device_lock:
             device = await get_or_connect_device(host, device_config)
             await device.update()
-            device_info = custom_serializer(device)
+            device_info = await custom_serializer(device)
             return {"sys_info": device_info["sys_info"]}
     except Exception as e:
         return await handle_device_error(host, e)
