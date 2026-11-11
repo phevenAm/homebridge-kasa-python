@@ -27,6 +27,10 @@
     "prepublishOnly": "npm run lint && npm run build",
     "test": "echo \"No test specified\" && exit 0",
     "watch": "npm run build && npm link && nodemon"
+    "prepublishOnly": "npm run lint && npm run build",
+"prepare": "tsc && node copyPythonFiles.js",
+"test": "echo \"No test specified\" && exit 0",
+
   },
   "keywords": [
     "homebridge",
